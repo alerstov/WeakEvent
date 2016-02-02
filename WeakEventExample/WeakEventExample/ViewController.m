@@ -51,6 +51,8 @@ EVENT_IMPL(Click)
     
     EVENT_ADD(button, onClick:^(id sender), {
         NSLog(@"click 1");
+        // uncomment to check unsubscribing from event handler
+        //EVENT_REMOVE_ALL();
     });
     
     self.clickToken = EVENT_ADD(button, onClick:^(id sender), {

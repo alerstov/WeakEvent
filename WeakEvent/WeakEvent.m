@@ -13,37 +13,57 @@
 static const void *EventBlocksKey = &EventBlocksKey;
 
 
-@interface WeakEventBlock : NSObject
-@property (nonatomic, copy) id block;
-@property (nonatomic, weak) NSMutableArray* handlers;
+
+@interface WeakEventToken : NSObject<NSCopying>
+@property (nonatomic, weak) id weakObj;
 @end
 
-@implementation WeakEventBlock
+@implementation WeakEventToken
 
--(void)dealloc
++(instancetype)tokenWithObject:(id)obj
 {
-    NSMutableArray* handlers = self.handlers;
-    if (handlers == nil) return;
-    
-    NSUInteger index = 0;
-    for (NSValue* value in self.handlers) {
-        if (self == [value nonretainedObjectValue]) break;
-        index++;
-    }
-    
-    [handlers removeObjectAtIndex:index];
+    WeakEventToken* token = [[WeakEventToken alloc]init];
+    token.weakObj = obj;
+    return token;
+}
+
+-(id)copyWithZone:(NSZone *)zone
+{
+    return [WeakEventToken tokenWithObject:self.weakObj];
 }
 
 @end
 
 
 
-@interface WeakEventToken : NSObject
-@property (nonatomic, weak) WeakEventBlock* eventBlock;
+
+
+@interface WeakEventBlock : NSObject
+@property (nonatomic, copy) id block;
+@property (nonatomic, weak) NSMutableSet* handlers;
 @end
 
-@implementation WeakEventToken
+@implementation WeakEventBlock
+
+// weak refernce to self is set to nil in dealloc
+-(void)dealloc
+{
+    NSMutableSet* handlers = self.handlers;
+    if (handlers == nil) return;
+    
+    NSMutableSet* toRemove = [NSMutableSet set];
+    for (WeakEventToken* token in handlers) {
+        if (token.weakObj == nil) {
+            [toRemove addObject:token];
+        }
+    }
+    
+    [handlers minusSet:toRemove];
+}
+
 @end
+
+
 
 
 
@@ -51,9 +71,9 @@ static const void *EventBlocksKey = &EventBlocksKey;
 
 -(id)weakEvent_addBlock:(id)block forKey:(const void *)key
 {
-    NSMutableArray* handlers = objc_getAssociatedObject(self, key);
+    NSMutableSet* handlers = objc_getAssociatedObject(self, key);
     if (handlers == nil){
-        handlers = [NSMutableArray array];
+        handlers = [NSMutableSet set];
         objc_setAssociatedObject(self, key, handlers, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     
@@ -61,8 +81,8 @@ static const void *EventBlocksKey = &EventBlocksKey;
     obj.block = block;
     obj.handlers = handlers;
     
-    NSValue* value = [NSValue valueWithNonretainedObject:obj];
-    [handlers addObject:value];
+    WeakEventToken* token = [WeakEventToken tokenWithObject:obj];
+    [handlers addObject:token];
     
     return obj;
 }
@@ -70,26 +90,34 @@ static const void *EventBlocksKey = &EventBlocksKey;
 
 -(void)weakEvent_raiseEventForKey:(const void *)key usingBlock:(void (^)(id))block
 {
-    NSMutableArray* handlers = objc_getAssociatedObject(self, key);
-    for (NSValue* value in handlers){
-        WeakEventBlock* obj = [value nonretainedObjectValue];
-        block(obj.block);
+    NSMutableSet* handlers = objc_getAssociatedObject(self, key);
+    
+    // one-level-deep copy to avoid mutating while raising
+    NSMutableSet* arr = [[NSMutableSet alloc]initWithSet:handlers copyItems:YES];
+    
+    for (WeakEventToken* token in arr){
+        WeakEventBlock* obj = token.weakObj;
+        if (obj != nil) {
+            block(obj.block);
+        }
     }
 }
 
 
 -(void)weakEvent_removeAllEventBlocks
 {
-    NSMutableArray* eventBlocks = objc_getAssociatedObject(self, EventBlocksKey);
+    NSMutableSet* eventBlocks = objc_getAssociatedObject(self, EventBlocksKey);
     [eventBlocks removeAllObjects];
 }
 
 -(void)weakEvent_removeEventBlock:(id)token
 {
+    if (token == nil) return;
+    
     NSAssert([token isKindOfClass:[WeakEventToken class]], @"Invalid token class");
     
     if ([token isKindOfClass:[WeakEventToken class]]){
-        id obj = [token eventBlock];
+        id obj = [token weakObj];
         if (obj != nil){
             NSMutableArray* eventBlocks = objc_getAssociatedObject(self, EventBlocksKey);
             [eventBlocks removeObject:obj];
@@ -99,15 +127,14 @@ static const void *EventBlocksKey = &EventBlocksKey;
 
 -(id)weakEvent_addEventBlock:(id)eventBlock
 {
-    NSMutableArray* eventBlocks = objc_getAssociatedObject(self, EventBlocksKey);
+    NSMutableSet* eventBlocks = objc_getAssociatedObject(self, EventBlocksKey);
     if (eventBlocks == nil){
-        eventBlocks = [NSMutableArray array];
+        eventBlocks = [NSMutableSet set];
         objc_setAssociatedObject(self, EventBlocksKey, eventBlocks, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [eventBlocks addObject:eventBlock];
     
-    WeakEventToken* token = [[WeakEventToken alloc]init];
-    token.eventBlock = eventBlock;
+    WeakEventToken* token = [WeakEventToken tokenWithObject:eventBlock];
     return token;
 }
 
